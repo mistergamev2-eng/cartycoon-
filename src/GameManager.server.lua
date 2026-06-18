@@ -1,21 +1,27 @@
--- Car Tycoon - Main Game Manager
+-- Car Tycoon - Improved Game Manager
 -- Server-side game initialization and event setup
 
 local CONFIG = require(game:GetService("ServerStorage"):WaitForChild("Config"))
 local MoneyManager = require(game:GetService("ServerStorage"):WaitForChild("MoneyManager"))
+local DataManager = require(game:GetService("ServerStorage"):WaitForChild("DataManager"))
 
 local GameManager = {}
+local players = game:GetService("Players")
+local replicatedStorage = game:GetService("ReplicatedStorage")
 
 -- ==================== INITIALIZATION ====================
 
 function GameManager:Initialize()
     print("🚗 Car Tycoon - Game Manager initialized!")
     
-    -- Créer les RemoteEvents s'ils n'existent pas
+    -- Créer les RemoteEvents
     self:CreateRemoteEvents()
     
     -- Setup des événements joueur
     self:SetupPlayerEvents()
+    
+    -- Setup des événements de jeu
+    self:SetupGameEvents()
     
     -- Start production loop
     self:StartProductionLoop()
@@ -24,9 +30,6 @@ end
 -- ==================== REMOTE EVENTS ====================
 
 function GameManager:CreateRemoteEvents()
-    local replicatedStorage = game:GetService("ReplicatedStorage")
-    
-    -- Créer dossier RemoteEvents s'il n'existe pas
     if not replicatedStorage:FindFirstChild("RemoteEvents") then
         local remoteEventsFolder = Instance.new("Folder")
         remoteEventsFolder.Name = "RemoteEvents"
@@ -35,15 +38,14 @@ function GameManager:CreateRemoteEvents()
     
     local remoteEventsFolder = replicatedStorage:FindFirstChild("RemoteEvents")
     
-    -- Créer les RemoteEvents
     local remoteEvents = {
         "UpdateMoneyEvent",
+        "UpdateLevelEvent",
         "UpdateStatsEvent",
         "UnlockCarEvent",
         "AssembleCarEvent",
         "BuyUpgradeEvent",
-        "HireWorkerEvent",
-        "PlayerConnectedEvent"
+        "HireWorkerEvent"
     }
     
     for _, eventName in ipairs(remoteEvents) do
@@ -60,56 +62,76 @@ end
 -- ==================== PLAYER EVENTS ====================
 
 function GameManager:SetupPlayerEvents()
-    local players = game:GetService("Players")
-    
     -- Joueur rejoint
     players.PlayerAdded:Connect(function(player)
         print("👤 " .. player.Name .. " a rejoint le serveur")
         
-        -- Charger l'argent du joueur
-        MoneyManager:LoadPlayerMoney(player)
+        -- Charger les données du joueur
+        local playerData = DataManager:LoadPlayerData(player)
         
-        -- Envoyer les données initiales
-        local initialMoney = MoneyManager:GetPlayerMoney(player)
-        local updateEvent = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("UpdateMoneyEvent")
-        updateEvent:FireClient(player, initialMoney)
+        -- Mettre à jour MoneyManager avec les données du DataStore
+        MoneyManager:SetPlayerMoney(player, playerData.currentMoney)
+        
+        -- Envoyer les données initiales au client
+        local updateMoneyEvent = replicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("UpdateMoneyEvent")
+        updateMoneyEvent:FireClient(player, playerData.currentMoney)
+        
+        local updateLevelEvent = replicatedStorage:WaitForChild("RemoteEvents"):WaitForChild("UpdateLevelEvent")
+        updateLevelEvent:FireClient(player, playerData.currentLevel)
     end)
     
     -- Joueur part
     players.PlayerRemoving:Connect(function(player)
         print("👤 " .. player.Name .. " a quitté le serveur")
         
-        -- Sauvegarder l'argent avant de partir
+        -- Sauvegarder les données
+        DataManager:SavePlayerData(player)
         MoneyManager:SavePlayerMoney(player)
         
-        -- Nettoyer les données du joueur
+        -- Nettoyer
         MoneyManager:RemovePlayer(player)
+        DataManager:RemovePlayer(player)
     end)
 end
 
--- ==================== ASSEMBLY EVENT ====================
+-- ==================== GAME EVENTS ====================
 
-function GameManager:SetupAssemblyEvent()
-    local assembleEvent = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("AssembleCarEvent")
+function GameManager:SetupGameEvents()
+    local remoteEvents = replicatedStorage:WaitForChild("RemoteEvents")
     
+    -- Assembly Event
+    local assembleEvent = remoteEvents:WaitForChild("AssembleCarEvent")
     assembleEvent.OnServerEvent:Connect(function(player, carType)
         if not player or not carType then return end
+        
+        -- Vérifier que la voiture est débloquée
+        if not DataManager:IsCarUnlocked(player, carType) then
+            warn(player.Name .. " tente d'assembler une voiture non débloquée!")
+            return
+        end
         
         local car = CONFIG:GetCarByType(carType)
         if not car then return end
         
-        -- Donner l'argent au joueur
+        -- Ajouter l'argent au joueur
+        DataManager:AddMoney(player, car.revenue)
         MoneyManager:AddMoney(player, car.revenue)
         
-        -- Envoyer les stats
-        local statsEvent = game:GetService("ReplicatedStorage"):WaitForChild("RemoteEvents"):WaitForChild("UpdateStatsEvent")
-        statsEvent:FireClient(player, {
-            money = MoneyManager:GetPlayerMoney(player),
-            carAssembled = 1
-        })
+        -- Mettre à jour les stats
+        DataManager:AddCarsAssembled(player, 1)
+        
+        -- Envoyer les mises à jour au client
+        local updateMoneyEvent = remoteEvents:WaitForChild("UpdateMoneyEvent")
+        updateMoneyEvent:FireClient(player, MoneyManager:GetPlayerMoney(player))
+        
+        local currentLevel = DataManager:GetCurrentLevel(player)
+        if currentLevel > DataManager:GetPlayerData(player).currentLevel then
+            local updateLevelEvent = remoteEvents:WaitForChild("UpdateLevelEvent")
+            updateLevelEvent:FireClient(player, currentLevel)
+        end
     end)
     
-    print("✅ Événement Assembly configuré")
+    print("✅ Événements de jeu configurés")
 end
 
 -- ==================== PRODUCTION LOOP ====================
@@ -120,14 +142,30 @@ function GameManager:StartProductionLoop()
     while true do
         wait(CONFIG.PRODUCTION_UPDATE_RATE)
         
-        -- Mettre à jour la production des ouvriers
-        -- À implémenter lors de la Phase 4
+        -- Production des ouvriers - À implémenter en Phase 4
+    end
+end
+
+-- ==================== SAVE LOOP ====================
+
+function GameManager:StartSaveLoop()
+    print("💾 Save loop démarrée")
+    
+    while true do
+        wait(60) -- Sauvegarder toutes les minutes
+        
+        for _, player in ipairs(players:GetPlayers()) do
+            DataManager:SavePlayerData(player)
+            MoneyManager:SavePlayerMoney(player)
+        end
     end
 end
 
 -- ==================== START ====================
 
 GameManager:Initialize()
-GameManager:SetupAssemblyEvent()
+GameManager:StartSaveLoop()
+
+print("🎮 Car Tycoon Server Ready!")
 
 return GameManager
